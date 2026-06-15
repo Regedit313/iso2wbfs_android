@@ -586,7 +586,7 @@ while true; do
     echo "5) Show WIT status"
     echo
     echo
-    echo "9) Setup / Update"
+    echo "9) Run Setup / Update (required before first use)"
     echo
     echo "0) Exit"
     echo
