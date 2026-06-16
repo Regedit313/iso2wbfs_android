@@ -9,7 +9,7 @@ echo "iso2wbfs_android Setup / Update"
 echo
 
 echo "Creating project folders..."
-mkdir -p iso_in wbfs_out
+mkdir -p iso_in wbfs_out/wbfs
 
 APP_DIR="$(pwd -P)"
 
@@ -175,8 +175,8 @@ if [ ! -d "$APP_DIR/iso_in" ]; then
     missing=1
 fi
 
-if [ ! -d "$APP_DIR/wbfs_out" ]; then
-    echo "- Missing: wbfs_out"
+if [ ! -d "$APP_DIR/wbfs_out/wbfs" ]; then
+    echo "- Missing: wbfs_out/wbfs"
     missing=1
 fi
 
@@ -194,6 +194,9 @@ echo "Put your .iso files in:"
 echo "$APP_DIR/iso_in"
 echo
 echo "Converted .wbfs files will be created in:"
-echo "$APP_DIR/wbfs_out"
+echo "$APP_DIR/wbfs_out/wbfs"
+echo
+echo "Copy this wbfs folder to the root of your SD/USB:"
+echo "$APP_DIR/wbfs_out/wbfs"
 echo
 read -p "Press Enter to continue..."
