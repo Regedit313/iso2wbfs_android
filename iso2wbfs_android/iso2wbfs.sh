@@ -7,16 +7,99 @@ mkdir -p iso_in wbfs_out
 APP_DIR="$(pwd -P)"
 ISO_DIR="$APP_DIR/iso_in"
 WBFS_DIR="$APP_DIR/wbfs_out"
+SPLIT_SIZE="2G"
 
 WIT_BACKEND=""
+
+INFO_DUMP=""
+INFO_IS_WII=0
+INFO_GAME_ID=""
+INFO_TITLE=""
+INFO_DISC_NAME=""
+INFO_DB_TITLE=""
+INFO_ID_REGION=""
+INFO_REGION_SETTING=""
+
+OUTPUT_TITLE=""
+OUTPUT_REGION_TEXT=""
+OUTPUT_FOLDER_NAME=""
+OUTPUT_PREFIX=""
+FINAL_DIR=""
+TMP_DIR=""
+OUT=""
+TMP_OUT=""
 
 prepare_dirs() {
     cd "$APP_DIR" || return 1
     mkdir -p "$ISO_DIR" "$WBFS_DIR"
 }
 
+sanitize_name() {
+    local text="$1"
+
+    text="$(printf '%s' "$text" | tr '\r\n\t' '   ')"
+    text="$(printf '%s' "$text" | sed -E 's/[^[:alnum:] ]+/ /g')"
+    text="$(printf '%s' "$text" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+
+    printf '%s\n' "$text"
+}
+
+lower_text() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+build_region_text() {
+    local id_region="$1"
+    local region_setting="$2"
+    local id_lower
+    local setting_lower
+
+    id_region="$(sanitize_name "$id_region")"
+    region_setting="$(sanitize_name "$region_setting")"
+
+    if [ -z "$id_region" ] && [ -z "$region_setting" ]; then
+        return 0
+    fi
+
+    if [ -z "$id_region" ]; then
+        printf '%s\n' "$region_setting"
+        return 0
+    fi
+
+    if [ -z "$region_setting" ]; then
+        printf '%s\n' "$id_region"
+        return 0
+    fi
+
+    id_lower="$(lower_text "$id_region")"
+    setting_lower="$(lower_text "$region_setting")"
+
+    if [ "$id_lower" = "$setting_lower" ]; then
+        printf '%s\n' "$id_region"
+        return 0
+    fi
+
+    case " $id_lower " in
+        *" $setting_lower "*)
+            printf '%s\n' "$id_region"
+            return 0
+            ;;
+    esac
+
+    case " $setting_lower " in
+        *" $id_lower "*)
+            printf '%s\n' "$region_setting"
+            return 0
+            ;;
+    esac
+
+    printf '%s %s\n' "$id_region" "$region_setting"
+}
+
 clean_temp_wbfs() {
+    find "$WBFS_DIR" -maxdepth 1 -type d -iname "*.iso2wbfs_part_dir" -exec rm -rf {} +
     find "$WBFS_DIR" -maxdepth 1 -type f -iname "*.iso2wbfs_part.wbfs" -exec rm -f {} +
+    find "$WBFS_DIR" -maxdepth 1 -type f -iname "*.iso2wbfs_part.wbf*" -exec rm -f {} +
 }
 
 detect_wit() {
@@ -70,12 +153,147 @@ require_wit() {
     return 0
 }
 
-is_wii_iso() {
-    local dump_output
+load_iso_info() {
+    local iso="$1"
 
-    dump_output="$(run_wit dump "$1" 2>/dev/null)" || return 1
+    INFO_DUMP=""
+    INFO_IS_WII=0
+    INFO_GAME_ID=""
+    INFO_TITLE=""
+    INFO_DISC_NAME=""
+    INFO_DB_TITLE=""
+    INFO_ID_REGION=""
+    INFO_REGION_SETTING=""
 
-    printf '%s\n' "$dump_output" | grep -Eiq 'File & disc type:[[:space:]]+.*WII[[:space:]]+&[[:space:]]+Wii'
+    INFO_DUMP="$(run_wit dump "$iso" 2>/dev/null)" || return 1
+
+    if printf '%s\n' "$INFO_DUMP" | grep -Eiq 'File & disc type:[[:space:]]+.*WII[[:space:]]+&[[:space:]]+Wii'; then
+        INFO_IS_WII=1
+    else
+        INFO_IS_WII=0
+    fi
+
+    INFO_GAME_ID="$(printf '%s\n' "$INFO_DUMP" \
+        | sed -nE 's/.*Disc & part IDs:[[:space:]]+disc=([A-Za-z0-9]{6}).*/\1/p' \
+        | head -n 1 \
+        | tr '[:lower:]' '[:upper:]')"
+
+    if [ -z "$INFO_GAME_ID" ]; then
+        INFO_GAME_ID="$(printf '%s\n' "$INFO_DUMP" \
+            | sed -nE 's/.*Disc & part IDs:.*boot=([A-Za-z0-9]{6}).*/\1/p' \
+            | head -n 1 \
+            | tr '[:lower:]' '[:upper:]')"
+    fi
+
+    INFO_DB_TITLE="$(printf '%s\n' "$INFO_DUMP" \
+        | sed -nE 's/^[[:space:]]*DB title:[[:space:]]*(.*)$/\1/p' \
+        | head -n 1 \
+        | sed -E 's/[[:space:]]+$//')"
+
+    INFO_DISC_NAME="$(printf '%s\n' "$INFO_DUMP" \
+        | sed -nE 's/^[[:space:]]*Disc name:[[:space:]]*(.*)$/\1/p' \
+        | head -n 1 \
+        | sed -E 's/[[:space:]]+$//')"
+
+    INFO_ID_REGION="$(printf '%s\n' "$INFO_DUMP" \
+        | sed -nE 's/^[[:space:]]*ID Region:[[:space:]]*([^[]*).*/\1/p' \
+        | head -n 1 \
+        | sed -E 's/[[:space:]]+$//')"
+
+    INFO_REGION_SETTING="$(printf '%s\n' "$INFO_DUMP" \
+        | sed -nE 's/^[[:space:]]*Region setting:[[:space:]]*[0-9]+[[:space:]]*\[([^]]+)\].*/\1/p' \
+        | head -n 1 \
+        | sed -E 's/[[:space:]]+$//')"
+
+    if [ -n "$INFO_DB_TITLE" ]; then
+        INFO_TITLE="$INFO_DB_TITLE"
+    elif [ -n "$INFO_DISC_NAME" ]; then
+        INFO_TITLE="$INFO_DISC_NAME"
+    else
+        INFO_TITLE=""
+    fi
+
+    return 0
+}
+
+make_output_names_from_info() {
+    local iso="$1"
+    local file_name
+    local base
+    local title
+    local region_text
+    local folder_base
+
+    file_name="$(basename "$iso")"
+    base="${file_name%.*}"
+
+    if [ -n "$INFO_TITLE" ]; then
+        title="$INFO_TITLE"
+    else
+        title="$base"
+    fi
+
+    title="$(sanitize_name "$title")"
+    [ -z "$title" ] && title="Unknown"
+
+    region_text="$(build_region_text "$INFO_ID_REGION" "$INFO_REGION_SETTING")"
+    region_text="$(sanitize_name "$region_text")"
+
+    OUTPUT_TITLE="$title"
+    OUTPUT_REGION_TEXT="$region_text"
+
+    folder_base="$title"
+
+    if [ -n "$region_text" ]; then
+        folder_base="$folder_base $region_text"
+    fi
+
+    folder_base="$(sanitize_name "$folder_base")"
+    [ -z "$folder_base" ] && folder_base="Unknown"
+
+    if [ -n "$INFO_GAME_ID" ]; then
+        OUTPUT_PREFIX="$INFO_GAME_ID"
+        OUTPUT_FOLDER_NAME="$folder_base [$INFO_GAME_ID]"
+    else
+        OUTPUT_PREFIX="$(sanitize_name "$base")"
+        [ -z "$OUTPUT_PREFIX" ] && OUTPUT_PREFIX="Unknown"
+        OUTPUT_FOLDER_NAME="$folder_base"
+    fi
+
+    FINAL_DIR="$WBFS_DIR/$OUTPUT_FOLDER_NAME"
+    TMP_DIR="$WBFS_DIR/$OUTPUT_FOLDER_NAME.iso2wbfs_part_dir"
+
+    OUT="$FINAL_DIR/$OUTPUT_PREFIX.wbfs"
+    TMP_OUT="$TMP_DIR/$OUTPUT_PREFIX.wbfs"
+}
+
+make_output_names_fallback() {
+    local iso="$1"
+    local file_name
+    local base
+    local clean_base
+
+    file_name="$(basename "$iso")"
+    base="${file_name%.*}"
+    clean_base="$(sanitize_name "$base")"
+    [ -z "$clean_base" ] && clean_base="Unknown"
+
+    INFO_IS_WII=0
+    INFO_GAME_ID=""
+    INFO_TITLE="$clean_base"
+    INFO_ID_REGION=""
+    INFO_REGION_SETTING=""
+
+    OUTPUT_TITLE="$clean_base"
+    OUTPUT_REGION_TEXT=""
+    OUTPUT_PREFIX="$clean_base"
+    OUTPUT_FOLDER_NAME="$clean_base"
+
+    FINAL_DIR="$WBFS_DIR/$OUTPUT_FOLDER_NAME"
+    TMP_DIR="$WBFS_DIR/$OUTPUT_FOLDER_NAME.iso2wbfs_part_dir"
+
+    OUT="$FINAL_DIR/$OUTPUT_PREFIX.wbfs"
+    TMP_OUT="$TMP_DIR/$OUTPUT_PREFIX.wbfs"
 }
 
 convert_wii_iso_recommended() {
@@ -91,6 +309,9 @@ convert_wii_iso_recommended() {
 
     echo
     echo "Convert Wii ISO to WBFS (recommended)"
+    echo
+    echo "Split size:"
+    echo "$SPLIT_SIZE"
     echo
     echo "Source folder:"
     echo "$ISO_DIR"
@@ -109,26 +330,25 @@ convert_wii_iso_recommended() {
     while IFS= read -r -d '' iso; do
         found=1
 
-        file_name="$(basename "$iso")"
-        base="${file_name%.*}"
-
-        out="$WBFS_DIR/$base.wbfs"
-        tmp_out="$WBFS_DIR/$base.iso2wbfs_part.wbfs"
-
         echo
         echo "----------------------------------------"
         echo "ISO:"
         echo "$iso"
-        echo
-        echo "WBFS:"
-        echo "$out"
         echo "----------------------------------------"
         echo
 
-        echo "Checking ISO type..."
+        echo "Reading ISO info..."
         echo
 
-        if ! is_wii_iso "$iso"; then
+        if ! load_iso_info "$iso"; then
+            echo "Skipped: ISO info could not be read."
+            echo "The ISO may be unknown, corrupted, or unsupported."
+            not_wii=$((not_wii + 1))
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        if [ "$INFO_IS_WII" -ne 1 ]; then
             echo "Skipped: ISO is not detected as a Wii game."
             echo "This may be GameCube, unknown, corrupted, or unsupported."
             not_wii=$((not_wii + 1))
@@ -136,14 +356,44 @@ convert_wii_iso_recommended() {
             continue
         fi
 
-        if [ -e "$out" ]; then
+        if [ -z "$INFO_GAME_ID" ]; then
+            echo "Skipped: Wii game ID could not be read."
+            echo "Source ISO was kept for safety."
+            not_wii=$((not_wii + 1))
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        make_output_names_from_info "$iso"
+
+        echo "Game title:"
+        echo "$OUTPUT_TITLE"
+        echo
+        echo "Game ID:"
+        echo "$INFO_GAME_ID"
+        echo
+        echo "Region info:"
+        if [ -n "$OUTPUT_REGION_TEXT" ]; then
+            echo "$OUTPUT_REGION_TEXT"
+        else
+            echo "Unknown"
+        fi
+        echo
+        echo "WBFS folder:"
+        echo "$FINAL_DIR"
+        echo
+        echo "Main WBFS:"
+        echo "$OUT"
+        echo
+
+        if [ -f "$OUT" ]; then
             echo "WBFS already exists. Checking it..."
             echo
 
-            if run_wit verify "$out"; then
+            if run_wit verify "$OUT"; then
                 echo
                 echo "Existing WBFS is valid. Skipping conversion:"
-                echo "$out"
+                echo "$OUT"
 
                 if [ -f "$iso" ]; then
                     if rm -f "$iso"; then
@@ -163,24 +413,34 @@ convert_wii_iso_recommended() {
                 continue
             else
                 echo
-                echo "Existing WBFS is invalid. Removing it and converting again:"
-                echo "$out"
-                rm -f "$out"
+                echo "Existing WBFS is invalid. Removing game folder and converting again:"
+                echo "$FINAL_DIR"
+                rm -rf "$FINAL_DIR"
             fi
+        elif [ -e "$FINAL_DIR" ]; then
+            echo "Existing game folder is incomplete or invalid. Removing it:"
+            echo "$FINAL_DIR"
+            rm -rf "$FINAL_DIR"
         fi
 
-        rm -f "$tmp_out"
+        rm -rf "$TMP_DIR"
+        mkdir -p "$TMP_DIR"
 
-        if run_wit copy --wbfs "$iso" "$tmp_out"; then
+        if run_wit copy --wbfs --split-size "$SPLIT_SIZE" "$iso" "$TMP_OUT"; then
             echo
             echo "Verifying temporary WBFS..."
             echo
 
-            if run_wit verify "$tmp_out"; then
-                if mv -f "$tmp_out" "$out" && [ -s "$out" ]; then
+            if run_wit verify "$TMP_OUT"; then
+                rm -rf "$FINAL_DIR"
+
+                if mv -f "$TMP_DIR" "$FINAL_DIR" && [ -s "$OUT" ]; then
                     echo
                     echo "Conversion completed:"
-                    echo "$out"
+                    echo "$FINAL_DIR"
+                    echo
+                    echo "Created files:"
+                    find "$FINAL_DIR" -maxdepth 1 -type f \( -iname "*.wbfs" -o -iname "*.wbf*" \) -print | sort
 
                     converted=$((converted + 1))
 
@@ -198,16 +458,16 @@ convert_wii_iso_recommended() {
                         fi
                     fi
                 else
-                    rm -f "$tmp_out"
+                    rm -rf "$TMP_DIR"
 
                     echo
-                    echo "Error: final WBFS could not be created:"
-                    echo "$out"
+                    echo "Error: final WBFS folder could not be created:"
+                    echo "$FINAL_DIR"
 
                     errors=$((errors + 1))
                 fi
             else
-                rm -f "$tmp_out"
+                rm -rf "$TMP_DIR"
 
                 echo
                 echo "Error: invalid WBFS after conversion:"
@@ -216,7 +476,7 @@ convert_wii_iso_recommended() {
                 errors=$((errors + 1))
             fi
         else
-            rm -f "$tmp_out"
+            rm -rf "$TMP_DIR"
 
             echo
             echo "Error: conversion failed:"
@@ -268,6 +528,9 @@ force_convert_all_iso() {
     echo "This mode does not check if the ISO is a Wii game."
     echo "GameCube or unknown ISO files may produce WBFS files that are not usable."
     echo
+    echo "Split size:"
+    echo "$SPLIT_SIZE"
+    echo
     read -p "Continue? Type y to confirm: " confirm
 
     if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
@@ -294,66 +557,89 @@ force_convert_all_iso() {
     while IFS= read -r -d '' iso; do
         found=1
 
-        file_name="$(basename "$iso")"
-        base="${file_name%.*}"
-
-        out="$WBFS_DIR/$base.wbfs"
-        tmp_out="$WBFS_DIR/$base.iso2wbfs_part.wbfs"
-
         echo
         echo "----------------------------------------"
         echo "ISO:"
         echo "$iso"
-        echo
-        echo "WBFS:"
-        echo "$out"
         echo "----------------------------------------"
         echo
 
-        if [ -e "$out" ]; then
+        if load_iso_info "$iso"; then
+            make_output_names_from_info "$iso"
+        else
+            echo "Warning: ISO info could not be read."
+            echo "Output will use the cleaned ISO file name."
+            make_output_names_fallback "$iso"
+        fi
+
+        echo
+        echo "WBFS folder:"
+        echo "$FINAL_DIR"
+        echo
+        echo "Main WBFS:"
+        echo "$OUT"
+        echo
+
+        if [ -z "$INFO_GAME_ID" ]; then
+            echo "Warning: no game ID was found."
+            echo "USB Loader GX compatibility may be reduced."
+            echo
+        fi
+
+        if [ -f "$OUT" ]; then
             echo "WBFS already exists. Checking it..."
             echo
 
-            if run_wit verify "$out"; then
+            if run_wit verify "$OUT"; then
                 echo
                 echo "Existing WBFS is valid. Skipping conversion:"
-                echo "$out"
+                echo "$OUT"
 
                 skipped=$((skipped + 1))
                 continue
             else
                 echo
-                echo "Existing WBFS is invalid. Removing it and converting again:"
-                echo "$out"
-                rm -f "$out"
+                echo "Existing WBFS is invalid. Removing game folder and converting again:"
+                echo "$FINAL_DIR"
+                rm -rf "$FINAL_DIR"
             fi
+        elif [ -e "$FINAL_DIR" ]; then
+            echo "Existing game folder is incomplete or invalid. Removing it:"
+            echo "$FINAL_DIR"
+            rm -rf "$FINAL_DIR"
         fi
 
-        rm -f "$tmp_out"
+        rm -rf "$TMP_DIR"
+        mkdir -p "$TMP_DIR"
 
-        if run_wit copy --wbfs "$iso" "$tmp_out"; then
+        if run_wit copy --wbfs --split-size "$SPLIT_SIZE" "$iso" "$TMP_OUT"; then
             echo
             echo "Verifying temporary WBFS..."
             echo
 
-            if run_wit verify "$tmp_out"; then
-                if mv -f "$tmp_out" "$out" && [ -s "$out" ]; then
+            if run_wit verify "$TMP_OUT"; then
+                rm -rf "$FINAL_DIR"
+
+                if mv -f "$TMP_DIR" "$FINAL_DIR" && [ -s "$OUT" ]; then
                     echo
                     echo "Conversion completed:"
-                    echo "$out"
+                    echo "$FINAL_DIR"
+                    echo
+                    echo "Created files:"
+                    find "$FINAL_DIR" -maxdepth 1 -type f \( -iname "*.wbfs" -o -iname "*.wbf*" \) -print | sort
 
                     converted=$((converted + 1))
                 else
-                    rm -f "$tmp_out"
+                    rm -rf "$TMP_DIR"
 
                     echo
-                    echo "Error: final WBFS could not be created:"
-                    echo "$out"
+                    echo "Error: final WBFS folder could not be created:"
+                    echo "$FINAL_DIR"
 
                     errors=$((errors + 1))
                 fi
             else
-                rm -f "$tmp_out"
+                rm -rf "$TMP_DIR"
 
                 echo
                 echo "Error: invalid WBFS after conversion:"
@@ -362,7 +648,7 @@ force_convert_all_iso() {
                 errors=$((errors + 1))
             fi
         else
-            rm -f "$tmp_out"
+            rm -rf "$TMP_DIR"
 
             echo
             echo "Error: conversion failed:"
@@ -461,6 +747,8 @@ verify_all_wbfs() {
 
     prepare_dirs || return
 
+    clean_temp_wbfs
+
     echo
     echo "Verify WBFS files"
     echo
@@ -488,8 +776,9 @@ verify_all_wbfs() {
             errors=$((errors + 1))
         fi
 
-    done < <(find "$WBFS_DIR" -maxdepth 1 -type f \
+    done < <(find "$WBFS_DIR" -type f \
         -iname "*.wbfs" \
+        ! -path "*/.iso2wbfs_part_dir/*" \
         ! -iname "*.iso2wbfs_part.wbfs" \
         -print0)
 
