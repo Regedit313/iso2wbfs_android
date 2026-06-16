@@ -2,11 +2,12 @@
 
 cd "$(dirname "$0")" || exit 1
 
-mkdir -p iso_in wbfs_out
+mkdir -p iso_in wbfs_out/wbfs
 
 APP_DIR="$(pwd -P)"
 ISO_DIR="$APP_DIR/iso_in"
-WBFS_DIR="$APP_DIR/wbfs_out"
+WBFS_OUT_DIR="$APP_DIR/wbfs_out"
+WBFS_DIR="$WBFS_OUT_DIR/wbfs"
 SPLIT_SIZE="2G"
 
 WIT_BACKEND=""
@@ -319,6 +320,10 @@ convert_wii_iso_recommended() {
     echo "Output folder:"
     echo "$WBFS_DIR"
     echo
+    echo "To use on SD/USB:"
+    echo "Copy this folder to the root of your SD/USB:"
+    echo "$WBFS_DIR"
+    echo
 
     found=0
     converted=0
@@ -546,6 +551,10 @@ force_convert_all_iso() {
     echo "$ISO_DIR"
     echo
     echo "Output folder:"
+    echo "$WBFS_DIR"
+    echo
+    echo "To use on SD/USB:"
+    echo "Copy this folder to the root of your SD/USB:"
     echo "$WBFS_DIR"
     echo
 
@@ -864,13 +873,13 @@ while true; do
     echo "iso2wbfs_android"
     echo
     echo
-    echo "1) Convert Wii ISO to WBFS (recommended)"
+    echo "1) Convert Wii ISO to /wbfs/ (recommended)"
     echo
-    echo "2) Force convert ISO to WBFS (expert mode)"
+    echo "2) Force convert ISO to /wbfs/ (expert mode)"
     echo
     echo "3) Dump all ISO info from iso_in"
     echo
-    echo "4) Verify all WBFS from wbfs_out"
+    echo "4) Verify all WBFS from wbfs_out/wbfs"
     echo
     echo "5) Show WIT status"
     echo
